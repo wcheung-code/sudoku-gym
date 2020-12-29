@@ -1,12 +1,8 @@
 import gym
 from gym import error, spaces, utils
-from gym.utils import seeding
 import numpy as np
-import random
 from itertools import product
 from collections import defaultdict
-from ast import literal_eval
-import pyglet
 
 # Utility Functions:
 def baseline(row, col, dim):
@@ -15,9 +11,6 @@ def baseline(row, col, dim):
 def shuffle(s):
     np.random.shuffle(s)
     return s
-
-def convert(g):
-    return ''.join(map(lambda x: ''.join(map(str, x)), g.tolist()))
 
 def get_possibilities(puzzle, dim):
     constraints = list()
@@ -54,19 +47,9 @@ def get_possibilities(puzzle, dim):
 
     return possibilities
 
-def given_value(value):
-    return spaces.Box(low=value, high=value, shape=(1, ), dtype=np.int)
-
-def action_space_i(dim):
-    from math import gcd
-    a = range(1, dim**2 + 1)
-    lcm = a[0]
-    for i in a[1:]:
-        lcm = lcm*i//gcd(lcm, i)
-    return lcm
-
 def build(line, dim):
     return line[0] + line[6:11].join([line[1:6]*(dim-1)]*dim) + line[11:16]
+
 
 class ConfigClass:
     def __init__(self, dim):
@@ -84,44 +67,122 @@ class SudokuSolutionClass(ConfigClass):
         rows, cols, nums = self.config['rows'], self.config['cols'], self.config['nums']
         self.solution = np.array([nums[baseline(row, col, self.dim)] for row, col in product(rows, cols)])
         self.solution = self.solution.reshape((self.dim**2, self.dim**2))
-
-## null_percentage is encouraged to be less than 0.75
+        
 class SudokuProblemClass(SudokuSolutionClass):
-    def __init__(self, dim, null_percentage):
+    def __init__(self, dim):
         super().__init__(dim)
-        self.solution = SudokuSolutionClass(self.dim).solution
-        self.puzzle = self.solution
-        self.null_percentage = null_percentage
-        null_n = int(null_percentage * dim**4)
-        null_indices = shuffle(list(product(np.arange(dim**2), repeat = 2)))[:null_n]
-        for i, j in null_indices:
-            self.puzzle[i, j] = 0
-        self.possibilities = get_possibilities(self.puzzle, self.dim)
+        self.solution_class = SudokuSolutionClass(self.dim)
+        self.solution = self.solution_class.solution.copy()
+        self.problem = self.solution_class.solution.copy()
+        self.attempted = self.solution_class.solution.copy()
+        self.possibilities = None
+        
+    def _find_empty_location(self, arr, l):
+        for row, col in product(range(self.dim**2), repeat = 2):
+            if arr[row][col] == 0:
+                l[0], l[1] = row, col
+                return True
+        return False
+    
+    def _used_in_row(self, arr, row, num):
+        for i in range(self.dim**2):
+            if arr[row][i] == num:
+                return True
+        return False
+    
+    def _used_in_col(self, arr, col, num):
+        for i in range(self.dim**2):
+            if arr[i][col] == num:
+                return True
+        return False
+    
+    def _used_in_box(self, arr, row, col, num):
+        for i, j in product(range(self.dim), repeat = 2):
+            if arr[i + row][j + col] == num:
+                return True
+        return False
+    
+    def _check_location_is_safe(self, arr, row, col, num):
+        return (not self._used_in_row(arr, row, num) and
+               not self._used_in_col(arr, col, num) and
+               not self._used_in_box(arr, row - row % self.dim, 
+                               col - col % self.dim, num))
+
+    def solve_sudoku(self, arr):
+        cache = [0, 0]
+        if not self._find_empty_location(arr, cache):
+            return True
+        row, col = tuple(cache)
+        for num in range(1, self.dim**2 + 1):
+            if self._check_location_is_safe(arr, row, col, num):
+                arr[row][col]= num 
+                if self.solve_sudoku(arr):
+                    return True
+                arr[row][col] = 0
+        return False
+    
+    def _reset(self):
+        self.solution_class = SudokuSolutionClass(self.dim)
+        self.solution = self.solution_class.solution
+        self.problem = self.solution_class.solution
+        self.attempted = self.solution_class.solution.copy()
+        return True
+    
+    def _add_zero(self):
+        row = np.random.randint(0, self.dim**2)
+        col = np.random.randint(0, self.dim**2)
+        while True:
+            if self.problem[row][col]:
+                self.problem[row][col] = 0
+                self.attempted[row][col] = 0
+                return True
+            else:
+                row = np.random.randint(0, self.dim**2)
+                col = np.random.randint(0, self.dim**2)
+                
+    def _compare_solution(self):
+        self.solve_sudoku(self.attempted)
+        if np.all(self.attempted == self.solution):
+            self.attempted = self.problem.copy()
+            return True
+        self.attempted = self.problem.copy()
+        return False
+    
+    def generate_problem(self):
+        while True:
+            previous_problem = self.problem.copy()
+            self._add_zero()
+            if self._compare_solution():
+                continue
+            else:
+                self.possibilities = get_possibilities(previous_problem, self.dim)
+                return previous_problem
 
 class SudokuProblemSpace(gym.Space):
-    def __init__(self, dim, null_percentage):
-        assert isinstance(null_percentage, float) and null_percentage > 0 and null_percentage <= 1
+    def __init__(self, dim):
         assert isinstance(dim, int) and dim in [2, 3, 4, 5]
-        self.dim, self.null_percentage = dim, null_percentage
-        sudoku_problem_class = SudokuProblemClass(self.dim, self.null_percentage)
-        self.problem = sudoku_problem_class.puzzle
-        self.possibilities = sudoku_problem_class.possibilities
+        self.dim = dim
+        self.sample()
         gym.Space.__init__(self, (), np.int64)
 
     def sample(self):
-        sudoku_problem_class = SudokuProblemClass(self.dim, self.null_percentage)
-        self.problem = sudoku_problem_class.puzzle
-        self.possibilities = sudoku_problem_class.possibilities
+        self._reconstruct()
+        self.problem = self.intermediate.problem.copy()
+        self.possibilities = self.intermediate.possibilities.copy()
         return self.problem
     
+    def _reconstruct(self):
+        self.intermediate = SudokuProblemClass(self.dim)
+        self.intermediate.generate_problem()
+    
     def __repr__(self):
-        return "SudokuProblemSpace({}, {})".format(self.dim, self.null_percentage)
+        return "SudokuProblemSpace({})".format(self.dim)
 
 class SudokuEnv(gym.Env):
     metadata = {'render.modes': ['ansi']}
 
-    def __init__(self, dim, null_percentage):
-        self.dim, self.null_percentage = dim, null_percentage
+    def __init__(self, dim):
+        self.dim = dim
         self.changed = False
         self.board = board = {
             0: '╔════╤════╦════╗',
@@ -158,19 +219,21 @@ class SudokuEnv(gym.Env):
         return self.problem, reward, done
 
     def reset(self):
-        return self.observation_space.sample()
+        self.problem = self.observation_space.sample()
+        self.possibilities = get_possibilities(self.problem, self.dim)
+        return self.problem
 
     def render(self, mode='ansi'):
-        return self._build_ansi_board(self.observation_space.problem)
+        return self._build_ansi_board(self.problem)
 
     def close(self):
         pass
 
     def _build_spaces(self):
-        self.observation_space = SudokuProblemSpace(self.dim, self.null_percentage)
+        self.observation_space = SudokuProblemSpace(self.dim)
         self.action_space = spaces.Discrete(self.dim**6)
-        self.problem = self.observation_space.problem
-        self.possibilities = self.observation_space.possibilities
+        self.problem = self.observation_space.problem.copy()
+        self.possibilities = self.observation_space.possibilities.copy()
 
     def _build_ansi_board(self, problem):
         puzzle = [build(self.board[0], self.dim)]

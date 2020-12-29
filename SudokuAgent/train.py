@@ -5,9 +5,7 @@ def convert(g):
     return ''.join(map(lambda x: ''.join(map(str, x)), g.tolist()))
 
 # Create the environment
-config = {
-    'dim': 3, 'null_percentage': 0.5,
-}
+config = {'dim': 3}
 
 env = gym.make('sudoku:Sudoku-v0', **config)
 

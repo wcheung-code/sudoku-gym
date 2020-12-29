@@ -27,6 +27,4 @@ RUN pip install -e SudokuEnv
 
 # Run FastAPI server
 # CMD [ "python", "./AcademyAPI.py" ]
-#CMD ["uvicorn", "AcademyAPI:app", "--host", "0.0.0.0", "--port", "4000"]
-
-# Install customized Gym Environment
+# CMD ["uvicorn", "AcademyAPI:app", "--host", "0.0.0.0", "--port", "4000"]
