@@ -1,245 +1,187 @@
 import gym
-from gym import error, spaces, utils
+from gym import spaces
 import numpy as np
+import requests
+from ast import literal_eval
+from z3 import Solver, Int, Or, Distinct, sat
 from itertools import product
-from collections import defaultdict
 
-# Utility Functions:
-def baseline(row, col, dim):
-    return (dim * (row % dim) + row // dim + col) % (dim**2)
+from requests.packages.urllib3.exceptions import InsecureRequestWarning
+requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
 
-def shuffle(s):
-    np.random.shuffle(s)
-    return s
+class SudokuObservationSpace(gym.Space):
 
-def get_possibilities(puzzle, dim):
-    constraints = list()
-    square = dict()
-    counter = 0
-    puzzle_dict_format = dict()
-    possibilities = defaultdict(set)
-
-    for i, row in enumerate(puzzle):
-        for j, value in enumerate(row):
-            puzzle_dict_format[(i, j)] = value
-
-    for index in np.arange(dim**2):
-        constraints.append(set([(index, i) for i in np.arange(dim**2)]))
-        constraints.append(set([(i, index) for i in np.arange(dim**2)]))
-
-
-    for index in dim*np.arange(dim):
-        for tulip in [(index, i) for i in dim*np.arange(dim)]:
-            square[counter] = tulip
-            counter += 1
-
-    for row, col in square.values():
-        row_ids = [row + i for i in np.arange(dim)]
-        col_ids = [col + j for j in np.arange(dim)]
-        constraints.append(set(list(product(row_ids, col_ids))))
-
-    for k, v in puzzle_dict_format.items():
-        for checker in [s for s in constraints if k in s]:
-            if not v: ## v = 0
-                possible_values = set(map(lambda x: puzzle_dict_format[x], checker - set((k, v)))) - {v}
-                possibilities[k] |= possible_values
-    possibilities = {k: set(np.arange(1, dim**2 + 1)) - v for k, v in possibilities.items()}
-
-    return possibilities
-
-def build(line, dim):
-    return line[0] + line[6:11].join([line[1:6]*(dim-1)]*dim) + line[11:16]
-
-
-class ConfigClass:
-    def __init__(self, dim):
-        self.dim = dim
-        self.config = dict()
-        for variable in ['rows', 'cols', 'nums']:
-            if variable != 'nums':
-                self.config[variable] = np.array([g*self.dim + i for g, i in product(shuffle(np.arange(self.dim)), repeat = 2)])
-            else:
-                self.config[variable] = shuffle(np.arange(1, self.dim**2 + 1))
-
-class SudokuSolutionClass(ConfigClass):
-    def __init__(self, dim):
-        super().__init__(dim)
-        rows, cols, nums = self.config['rows'], self.config['cols'], self.config['nums']
-        self.solution = np.array([nums[baseline(row, col, self.dim)] for row, col in product(rows, cols)])
-        self.solution = self.solution.reshape((self.dim**2, self.dim**2))
-        
-class SudokuProblemClass(SudokuSolutionClass):
-    def __init__(self, dim):
-        super().__init__(dim)
-        self.solution_class = SudokuSolutionClass(self.dim)
-        self.solution = self.solution_class.solution.copy()
-        self.problem = self.solution_class.solution.copy()
-        self.attempted = self.solution_class.solution.copy()
-        self.possibilities = None
-        
-    def _find_empty_location(self, arr, l):
-        for row, col in product(range(self.dim**2), repeat = 2):
-            if arr[row][col] == 0:
-                l[0], l[1] = row, col
-                return True
-        return False
-    
-    def _used_in_row(self, arr, row, num):
-        for i in range(self.dim**2):
-            if arr[row][i] == num:
-                return True
-        return False
-    
-    def _used_in_col(self, arr, col, num):
-        for i in range(self.dim**2):
-            if arr[i][col] == num:
-                return True
-        return False
-    
-    def _used_in_box(self, arr, row, col, num):
-        for i, j in product(range(self.dim), repeat = 2):
-            if arr[i + row][j + col] == num:
-                return True
-        return False
-    
-    def _check_location_is_safe(self, arr, row, col, num):
-        return (not self._used_in_row(arr, row, num) and
-               not self._used_in_col(arr, col, num) and
-               not self._used_in_box(arr, row - row % self.dim, 
-                               col - col % self.dim, num))
-
-    def solve_sudoku(self, arr):
-        cache = [0, 0]
-        if not self._find_empty_location(arr, cache):
-            return True
-        row, col = tuple(cache)
-        for num in range(1, self.dim**2 + 1):
-            if self._check_location_is_safe(arr, row, col, num):
-                arr[row][col]= num 
-                if self.solve_sudoku(arr):
-                    return True
-                arr[row][col] = 0
-        return False
-    
-    def _reset(self):
-        self.solution_class = SudokuSolutionClass(self.dim)
-        self.solution = self.solution_class.solution
-        self.problem = self.solution_class.solution
-        self.attempted = self.solution_class.solution.copy()
-        return True
-    
-    def _add_zero(self):
-        row = np.random.randint(0, self.dim**2)
-        col = np.random.randint(0, self.dim**2)
-        while True:
-            if self.problem[row][col]:
-                self.problem[row][col] = 0
-                self.attempted[row][col] = 0
-                return True
-            else:
-                row = np.random.randint(0, self.dim**2)
-                col = np.random.randint(0, self.dim**2)
-                
-    def _compare_solution(self):
-        self.solve_sudoku(self.attempted)
-        if np.all(self.attempted == self.solution):
-            self.attempted = self.problem.copy()
-            return True
-        self.attempted = self.problem.copy()
-        return False
-    
-    def generate_problem(self):
-        while True:
-            previous_problem = self.problem.copy()
-            self._add_zero()
-            if self._compare_solution():
-                continue
-            else:
-                self.possibilities = get_possibilities(previous_problem, self.dim)
-                return previous_problem
-
-class SudokuProblemSpace(gym.Space):
-    def __init__(self, dim):
-        assert isinstance(dim, int) and dim in [2, 3, 4, 5]
-        self.dim = dim
-        self.sample()
+    def __init__(self, difficulty):
+        assert difficulty in ['easy', 'medium', 'hard', 'random']
+        self.difficulty = difficulty
+        self.url = 'https://sugoku.herokuapp.com/board?difficulty={}'
+        self._generate_problem()
         gym.Space.__init__(self, (), np.int64)
-
+    
     def sample(self):
-        self._reconstruct()
-        self.problem = self.intermediate.problem.copy()
-        self.possibilities = self.intermediate.possibilities.copy()
+        self._generate_problem()
         return self.problem
     
-    def _reconstruct(self):
-        self.intermediate = SudokuProblemClass(self.dim)
-        self.intermediate.generate_problem()
+    def _generate_problem(self):
+        r = requests.get(self.url.format(self.difficulty), verify=False)
+        self.problem = np.array(literal_eval(r.text)['board'])
     
-    def __repr__(self):
-        return "SudokuProblemSpace({})".format(self.dim)
+    def _shape(self):
+        return self.problem.shape
+    
+class SudokuSolver:
 
-class SudokuEnv(gym.Env):
-    metadata = {'render.modes': ['ansi']}
+    def __init__(self):
+        self.rows, self.cols = '012345678', '012345678'
+        self.positions = list(map(lambda a: a[0] + a[1], product(self.rows, self.cols)))
+        self.symbols = {pos: Int(pos) for pos in self.positions}
+        self.solver = None      
+        
+    def solve(self, problem):
 
-    def __init__(self, dim):
-        self.dim = dim
-        self.changed = False
-        self.board = board = {
-            0: '╔════╤════╦════╗',
-            1: '║ .. │ .. ║ .. ║',
-            2: '╟────┼────╫────╢',
-            3: '╠════╪════╬════╣',
-            4: '╚════╧════╩════╝'
-        }
-        self._build_spaces()
+        self.set_conditions(problem)
 
-        self.mapping = dict()
-        for i in range(1, self.dim**6 + 1):
-            x = (i-1)//self.dim**4
-            y = (i - self.dim**4*x - 1)//(self.dim**2)
-            value = self.dim**2 if not i%(self.dim**2) else i%(self.dim**2)
-            self.mapping[i-1] = (value, (x, y))
+        if self.solver.check() != sat:
+            raise Exception("No solution.")
 
-    def step(self, action):
-        target_value, target_cell = self.mapping[action]
-        if target_cell in self.possibilities.keys():
-            if target_value in self.possibilities[target_cell]:
-                self.problem[target_cell] = target_value
-                self.changed = True
-                reward = 1 if np.all(self.problem != 0) else 0
-                done = True if np.all(self.problem != 0) else False
-            else:
-                reward = -1 if len(self.possibilities[target_cell]) == 0 else 0
-                done = True if len(self.possibilities[target_cell]) == 0 else False
-        else:
-            reward, done = 0, False
-        if self.changed:
-            self.possibilities = get_possibilities(self.problem, self.dim)
-            self.changed = False
-        return self.problem, reward, done
+        model = self.solver.model()
+        solution = {pos: int(model.evaluate(s).as_string()) for pos, s in self.symbols.items()}
+        return np.array(list(solution.values())).reshape(9,9)
+    
+    def set_conditions(self, problem):
+        self._initialize_solver()
+        self._add_value_conditions()
+        self._add_row_conditions()
+        self._add_col_conditions()
+        self._add_block_conditions()
+        self._import_problem(problem)
+
+    def _initialize_solver(self):
+        self.solver = Solver()
+    
+    def _add_value_conditions(self):
+        for symbol in self.symbols.values():
+            self.solver.add(Or([symbol == i for i in range(1, 10)]))
+    
+    def _add_row_conditions(self):
+        for row in self.rows:
+            self.solver.add(Distinct([self.symbols[row + col] for col in self.cols]))
+
+    def _add_col_conditions(self):
+        for col in self.cols:
+            self.solver.add(Distinct([self.symbols[row + col] for row in self.rows]))
+        
+    def _add_block_conditions(self):
+        for i, j in product(range(3), repeat=2):
+            blocks = [self.symbols[self.rows[m + 3*i] + self.cols[n + 3*j]] for m, n in product(range(3), repeat=2)]
+            self.solver.add(Distinct(blocks))
+            
+    def _import_problem(self, problem):
+        for row, col, value in zip(*np.nonzero(problem) + (problem[np.nonzero(problem)], )):
+            pos = str(row) + str(col)
+            self.solver.add(self.symbols[pos] == str(value))
+            
+class ActionTransformer:
+
+    def __init__(self):
+        return
+    
+    def _decode_action(self, action):
+        ### action from action_space to (row, column, value) [row, col, value all int]
+        return tuple(map(int, str(int(np.base_repr(action, base=9)) + 1).zfill(3)))
+
+    def _encode_action(self, action_tuple):
+        ### (row, column, value) [row, col, value all int] to action in action_space
+        row, col, value = action_tuple
+        return 81*row + 9*col + value - 1
+    
+
+'''
+class SudokuActionSpace(gym.Space, ActionTransformer):
+
+    def __init__(self):
+        self.num_actions = 729
+        super().__init__()
+    
+    def sample(self, problem):
+        actions = np.arange(self.num_actions)
+        return np.random.choice(actions, p = self._action_probabilities(problem))
+
+    def _action_probabilities(self, problem):
+        prob_weights = np.zeros(self.num_actions) 
+        for coord in product(range(9), repeat=2):
+            if not _get_options(coord, problem):
+                continue
+            freq = len( _get_options(coord, problem))
+            for value in _get_options(coord, problem):
+                encoded_action = self._encode_action(coord + (value,))
+                prob_weights[encoded_action] = 1/freq
+        return self._normalize(prob_weights)
+
+    def _normalize(self, probs):
+        prob_factor = 1 / sum(probs)
+        return np.array([prob_factor * p for p in probs])
+    
+    def _get_options(self, coord, problem):
+        options = {1, 2, 3, 4, 5, 6, 7, 8, 9}
+        if problem[coord]:
+            return set()
+        for indices in _get_coord_checks(coord):
+            if not problem[indices]:
+                continue
+            options -= set([problem[indices]])
+        return options
+
+    def _get_coord_checks(self, coord):
+        rows, cols = '012345678', '012345678'
+        lookup = set()
+        for row in rows:
+            check = set([(int(row), int(col)) for col in cols])
+            if coord in check:
+                lookup |= check
+        for col in cols:
+            check = set([(int(row), int(col)) for row in rows])
+            if coord in check:
+                lookup |= check
+        for i, j in product(range(3), repeat=2):
+            check = set([(int(rows[m + 3*i]), int(cols[n + 3*j])) for m, n in product(range(3), repeat=2)])
+            if coord in check:
+                lookup |= check
+        lookup -= set([coord])
+        return lookup
+    
+    def _shape(self):
+        return (self.num_actions, 1)
+'''
+
+class SudokuEnv(gym.Env, ActionTransformer):
+
+    metadata = {'render.modes': ['human']}
+
+    def __init__(self, difficulty):
+        super(SudokuEnv, self).__init__()
+        self.difficulty = difficulty
+        self.solver = SudokuSolver()
+        self.observation_space = SudokuObservationSpace(self.difficulty)
+        self.action_space = spaces.Discrete(729)
+        self.problem = None
+        self.solution = None
 
     def reset(self):
         self.problem = self.observation_space.sample()
-        self.possibilities = get_possibilities(self.problem, self.dim)
+        self.solution = self.solver.solve(self.problem)
         return self.problem
 
-    def render(self, mode='ansi'):
-        return self._build_ansi_board(self.problem)
-
-    def close(self):
-        pass
-
-    def _build_spaces(self):
-        self.observation_space = SudokuProblemSpace(self.dim)
-        self.action_space = spaces.Discrete(self.dim**6)
-        self.problem = self.observation_space.problem.copy()
-        self.possibilities = self.observation_space.possibilities.copy()
-
-    def _build_ansi_board(self, problem):
-        puzzle = [build(self.board[0], self.dim)]
-        for i, row in enumerate(problem):
-            row = np.where(np.invert(row.astype(bool)), '  ', np.char.zfill(row.astype(str), 2))
-            _, a, b, c, d = tuple(map(lambda x: build(x, self.dim), self.board.values()))
-            puzzle.append(''.join(sum(zip(np.concatenate(([''], row)), a.split('..')), ())) )
-            puzzle.append([b, c, d][((i+1)%(self.dim**2)==0)+((i+1)%(self.dim)==0)])
-        return '\n'.join(puzzle)
+    def step(self, action):
+        row, col, value = self._decode_action(action)
+        match = (self.solution[(row, col)] == value)
+        complete = np.all(self.solution == self.problem)        
+        if match and self.problem[(row, col)] == 0:
+            self.problem[(row, col)] = value
+            return self.problem, 1 if complete else 0, complete
+        else:
+            return self.problem, -1, complete
+    
+    def render(self, mode='human', close=False):
+        print(self.problem)
+        return self.problem

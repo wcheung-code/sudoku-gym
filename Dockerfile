@@ -8,9 +8,7 @@ RUN apt-get install -y --no-install-recommends \
         curl wget \
         sudo \
         vim \
-        unzip \
-        xvfb \
-        freeglut3-dev
+        unzip
 
 COPY ./requirements.txt /Sudoku/requirements.txt
 RUN pip install --upgrade pip
@@ -22,7 +20,7 @@ COPY ./SudokuAgent /Sudoku/SudokuAgent/
 
 # Set the working directory to /Academy/
 WORKDIR /Sudoku/
-#RUN pip install ray[rllib]
+RUN pip install ray[rllib]
 RUN pip install -e SudokuEnv
 
 # Run FastAPI server
